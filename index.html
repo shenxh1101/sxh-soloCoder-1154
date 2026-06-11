@@ -41,6 +41,14 @@
         <span class="tool-icon">○</span>
         <span class="tool-label">CIRC OBS</span>
       </button>
+      <button class="tool-btn" data-tool="rectMedia" title="放置矩形介质（可调节折射率）">
+        <span class="tool-icon">▥</span>
+        <span class="tool-label">RECT MED</span>
+      </button>
+      <button class="tool-btn" data-tool="circleMedia" title="放置圆形介质（可调节折射率）">
+        <span class="tool-icon">◎</span>
+        <span class="tool-label">CIRC MED</span>
+      </button>
       <button class="tool-btn" data-tool="detector" title="放置探测器">
         <span class="tool-icon">✚</span>
         <span class="tool-label">DETECTOR</span>
@@ -89,6 +97,22 @@
             <span class="slider-value" id="phase-val">0.00 rad</span>
           </div>
           <input type="range" id="phase" min="0" max="6.2832" step="0.05" value="0" class="glow-slider">
+        </div>
+
+        <div class="divider"></div>
+        <div class="form-row">
+          <label>介质参数</label>
+        </div>
+        <div class="slider-group">
+          <div class="slider-label">
+            <span>折射率 n</span>
+            <span class="slider-value" id="refract-val">1.50</span>
+          </div>
+          <input type="range" id="refract" min="1.0" max="4.0" step="0.05" value="1.5" class="glow-slider refract-slider">
+        </div>
+        <div class="form-row hint">
+          <span class="hint-icon">ⓘ</span>
+          <span>放置介质前调节折射率；或 SELECT 选中介质后实时修改</span>
         </div>
       </section>
 
@@ -177,6 +201,10 @@
             <div class="preset-icon">◯</div>
             <div class="preset-name">圆孔衍射</div>
           </button>
+          <button class="preset-btn" data-preset="refraction">
+            <div class="preset-icon">▥</div>
+            <div class="preset-name">折射演示</div>
+          </button>
         </div>
       </div>
     </section>
@@ -228,6 +256,10 @@
             <span>障碍物 (理想导体)</span>
           </div>
           <div class="legend-item">
+            <div class="legend-icon media">▥</div>
+            <span>透明介质 (可调折射率)</span>
+          </div>
+          <div class="legend-item">
             <div class="legend-icon">✚</div>
             <span>场强探测器</span>
           </div>
@@ -242,10 +274,12 @@
         <h2 class="card-title"><span class="accent-bar"></span>操作提示</h2>
         <ul class="tips">
           <li>点击工具栏工具 → 在画布上点击/拖拽放置</li>
-          <li>SELECT 模式下点击对象可选中并删除</li>
-          <li>画布任意位置点击查看瞬时场强</li>
-          <li>平面波从左边界入射，球面波由点源激发</li>
-          <li>障碍物内部：E = 0 (理想导体近似)</li>
+          <li>SELECT 模式下点击对象可选中，支持 Delete 删除</li>
+          <li>选中介质后可通过「折射率 n」滑块实时调节</li>
+          <li>SELECT 模式下点击探测器切换时域图显示</li>
+          <li>画布空白处点击查看瞬时场强 E(x,y)</li>
+          <li>平面波从左边界入射；球面波由点/线源激发</li>
+          <li>障碍物：E=0 (理想导体) | 介质：v=c/n 产生折射</li>
         </ul>
       </section>
     </aside>

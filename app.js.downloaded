@@ -1,4 +1,4 @@
-/* ================================================================
+﻿/* ================================================================
    EM Wave Simulator v2 - Core Logic
    2D Scalar Wave Equation FDTD Solver + Renderer + UI
    ================================================================ */
@@ -360,7 +360,7 @@
           const norm = val / Math.max(amp * 1.4, 0.001);
           const hue = 210 + 140 * norm * 0.5;
           const br = 0.45 + 0.45 * Math.sin(2 * Math.PI * val / Math.max(effLambda, 1) + t * 0.02);
-          const [R, G, B] = hsvToRgb(((hue % 360) + 360) % 360, 0.85, clamp(br, 0.12, 0.98));
+          const [R, G, B] = hsvToRgb(((hue % 360) + 360) % 360, 0.85, clamp(br, 0.12, 0.98);
           data[p] = R; data[p + 1] = G; data[p + 2] = B; data[p + 3] = 255;
         }
       } else {
@@ -719,10 +719,10 @@
         ctx.fillStyle = 'rgba(230,240,255,0.5)';
         ctx.font = '11px "JetBrains Mono", monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('选择探测器查看时域波形', W / 2, H / 2);
-        ctx.fillText('SELECT -> 点击探测器切换时域', W / 2, H / 2 + 16);
+        ctx.fillText('éæ©æ¢æµå¨æ¥çæ¶åæ³¢å½¢', W / 2, H / 2);
+        ctx.fillText('SELECT -> ç¹å»æ¢æµå¨åæ¢æ¶å', W / 2, H / 2 + 16);
         ctx.restore();
-        document.getElementById('detector-info').textContent = '—';
+        document.getElementById('detector-info').textContent = 'â';
         document.getElementById('td-field').textContent = '0.000';
         document.getElementById('td-peak').textContent = '0.000';
         document.getElementById('td-samples').textContent = '0';
@@ -744,7 +744,7 @@
       let peakVal = 0, peakX = 0, peakY = 0;
       for (let px = 0; px < W; px++) {
         const frac = px / (W - 1);
-        const sampleIdx = Math.floor((startIdx - 1 - frac * (N - 1) + N * 2) % N);
+        const sampleIdx = Math.floor((startIdx - 1 - frac * (N - 1) + N * 2) % N;
         const val = hist[sampleIdx];
         const py = (0.5 - (val / maxAbs) * 0.45) * H;
         if (px === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
@@ -863,7 +863,7 @@
         const cx = W * 0.45, cy = H * 0.5, holeR = 50;
         const obs = [
           { id: nextId(), shape: 'rect', x: cx - 6, y: 0, w: 12, h: cy - holeR },
-          { id: nextId(), shape: 'rect', x: cx - 6, y: cy + holeR, w: 12, h: H - (cy + holeR) },
+          { id: nextId(), shape: 'rect', x: cx - 6, y: cy + holeR, w: 12, h: H - (cy + holeR },
         ];
         const dets = [
           { id: nextId(), x: Math.floor(cx + 130), y: Math.floor(cy) },
@@ -930,7 +930,7 @@
       const originalHTML = btn ? btn.innerHTML : '';
       if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '<span class="btn-icon">⏳</span><span class="btn-text">生成中…</span>';
+        btn.innerHTML = '<span class="btn-icon">â³</span><span class="btn-text">çæä¸­â¦</span>';
       }
       const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
       const curr = STATE.fields.curr;
@@ -1021,7 +1021,7 @@
       document.getElementById('status-mouse').textContent = '(' + mx + ', ' + my + ')';
       document.getElementById('status-field').textContent = WaveSolver.sample(mx, my).toFixed(4);
     } else {
-      document.getElementById('status-mouse').textContent = '(—, —)';
+      document.getElementById('status-mouse').textContent = '(â, â)';
       document.getElementById('status-field').textContent = '0.000';
     }
     document.getElementById('status-fps').textContent = STATE.perf.fps.toFixed(0);
@@ -1094,9 +1094,9 @@
     const tooltip = document.getElementById('field-tooltip');
     const val = WaveSolver.sample(x, y);
     const n = STATE.fields.mediaN[y * CONFIG.GRID_W + x];
-    tooltip.innerHTML = '<div class="label">坐标 (' + x + ', ' + y + ')</div>' +
+    tooltip.innerHTML = '<div class="label">åæ  (' + x + ', ' + y + ')</div>' +
       '<div><span class="label">E(x,y)</span><span class="value">' + val.toFixed(6) + '</span></div>' +
-      (n > 1.01 ? '<div><span class="label">折射率 n</span><span class="value">' + n.toFixed(2) + '</span></div>' : '');
+      (n > 1.01 ? '<div><span class="label">æå°ç n</span><span class="value">' + n.toFixed(2) + '</span></div>' : '');
     const overlayCanvas = document.getElementById('overlay-canvas');
     const rect = overlayCanvas.getBoundingClientRect();
     const left = (clientX - rect.left);
@@ -1136,13 +1136,13 @@
     pauseBtn.addEventListener('click', () => {
       STATE.paused = !STATE.paused;
       pauseBtn.querySelector('.btn-icon').textContent = STATE.paused ? '>' : 'II';
-      pauseBtn.querySelector('.btn-text').textContent = STATE.paused ? '继续' : '暂停';
+      pauseBtn.querySelector('.btn-text').textContent = STATE.paused ? 'ç»§ç»­' : 'æå';
     });
     document.getElementById('step-btn').addEventListener('click', () => {
       if (!STATE.paused) {
         STATE.paused = true;
         pauseBtn.querySelector('.btn-icon').textContent = '>';
-        pauseBtn.querySelector('.btn-text').textContent = '继续';
+        pauseBtn.querySelector('.btn-text').textContent = 'ç»§ç»­';
       }
       STATE.singleStep = true;
     });
