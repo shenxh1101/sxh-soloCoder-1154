@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>电磁波传播模拟器 · EM Wave Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=JetBrains+Mono:wght@300;400;500&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <!-- 顶部工具工具栏 -->
+  <header class="toolbar">
+    <div class="brand">
+      <div class="brand-logo">◈</div>
+      <div class="brand-text">
+        <h1>EM·WAVE</h1>
+        <p>Electromagnetic Propagation Lab</p>
+      </div>
+    </div>
+    <div class="tools" id="tools-bar">
+      <button class="tool-btn active" data-tool="select" title="选择/移动对象">
+        <span class="tool-icon">◉</span>
+        <span class="tool-label">SELECT</span>
+      </button>
+      <button class="tool-btn" data-tool="pointSource" title="放置点状波源">
+        <span class="tool-icon">◎</span>
+        <span class="tool-label">POINT SRC</span>
+      </button>
+      <button class="tool-btn" data-tool="lineSource" title="放置线状波源（拖拽）">
+        <span class="tool-icon">╱</span>
+        <span class="tool-label">LINE SRC</span>
+      </button>
+      <button class="tool-btn" data-tool="rectObs" title="放置矩形障碍物（拖拽）">
+        <span class="tool-icon">▭</span>
+        <span class="tool-label">RECT OBS</span>
+      </button>
+      <button class="tool-btn" data-tool="circleObs" title="放置圆形障碍物">
+        <span class="tool-icon">○</span>
+        <span class="tool-label">CIRC OBS</span>
+      </button>
+      <button class="tool-btn" data-tool="detector" title="放置探测器">
+        <span class="tool-icon">✚</span>
+        <span class="tool-label">DETECTOR</span>
+      </button>
+      <button class="tool-btn danger" id="delete-btn" title="删除选中对象">
+        <span class="tool-icon">✕</span>
+        <span class="tool-label">DELETE</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 主体三栏布局 -->
+  <main class="layout">
+    <!-- 左控制面板 -->
+    <aside class="panel left-panel">
+      <section class="card">
+        <h2 class="card-title"><span class="accent-bar"></span>波源参数</h2>
+        
+        <div class="form-row">
+          <label>波类型</label>
+          <div class="segmented">
+            <button class="seg-btn active" data-wave="plane">平面波</button>
+            <button class="seg-btn" data-wave="spherical">球面波</button>
+          </div>
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <span>波长 λ</span>
+            <span class="slider-value" id="wavelength-val">16 px</span>
+          </div>
+          <input type="range" id="wavelength" min="4" max="64" step="1" value="16" class="glow-slider">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <span>振幅 A</span>
+            <span class="slider-value" id="amplitude-val">1.00</span>
+          </div>
+          <input type="range" id="amplitude" min="0.1" max="2.0" step="0.05" value="1.0" class="glow-slider">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <span>初相 φ₀</span>
+            <span class="slider-value" id="phase-val">0.00 rad</span>
+          </div>
+          <input type="range" id="phase" min="0" max="6.2832" step="0.05" value="0" class="glow-slider">
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title"><span class="accent-bar"></span>显示设置</h2>
+        
+        <div class="form-row">
+          <label>可视化模式</label>
+          <div class="segmented">
+            <button class="seg-btn active" data-display="phase">相位</button>
+            <button class="seg-btn" data-display="amplitude">振幅</button>
+          </div>
+        </div>
+
+        <div class="toggle-row">
+          <label for="wavefront-toggle">显示波前</label>
+          <label class="switch">
+            <input type="checkbox" id="wavefront-toggle" checked>
+            <span class="slider-knob"></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title"><span class="accent-bar"></span>模拟控制</h2>
+        
+        <div class="btn-grid">
+          <button class="action-btn primary" id="pause-btn">
+            <span class="btn-icon">❚❚</span>
+            <span class="btn-text">暂停</span>
+          </button>
+          <button class="action-btn" id="step-btn">
+            <span class="btn-icon">❯</span>
+            <span class="btn-text">单步</span>
+          </button>
+          <button class="action-btn" id="reset-btn">
+            <span class="btn-icon">↻</span>
+            <span class="btn-text">重置</span>
+          </button>
+          <button class="action-btn accent" id="export-btn">
+            <span class="btn-icon">⬇</span>
+            <span class="btn-text">导出CSV</span>
+          </button>
+        </div>
+
+        <div class="slider-group" style="margin-top:16px">
+          <div class="slider-label">
+            <span>模拟速度</span>
+            <span class="slider-value" id="speed-val">1.0x</span>
+          </div>
+          <input type="range" id="speed" min="0.25" max="3.0" step="0.25" value="1.0" class="glow-slider">
+        </div>
+      </section>
+    </aside>
+
+    <!-- 中间主画布 -->
+    <section class="center-stage">
+      <div class="canvas-wrapper">
+        <canvas id="main-canvas" width="600" height="600"></canvas>
+        <canvas id="overlay-canvas" width="600" height="600"></canvas>
+        <div id="crosshair" class="crosshair hidden"></div>
+        <div id="field-tooltip" class="field-tooltip hidden"></div>
+      </div>
+      
+      <!-- 预设场景栏 -->
+      <div class="presets-bar">
+        <div class="presets-label">预设场景:</div>
+        <div class="preset-grid">
+          <button class="preset-btn active" data-preset="free">
+            <div class="preset-icon">◎</div>
+            <div class="preset-name">自由传播</div>
+          </button>
+          <button class="preset-btn" data-preset="doubleSlit">
+            <div class="preset-icon">∥</div>
+            <div class="preset-name">双缝干涉</div>
+          </button>
+          <button class="preset-btn" data-preset="square">
+            <div class="preset-icon">■</div>
+            <div class="preset-name">方形衍射</div>
+          </button>
+          <button class="preset-btn" data-preset="zonePlate">
+            <div class="preset-icon">◎◎</div>
+            <div class="preset-name">半波带</div>
+          </button>
+          <button class="preset-btn" data-preset="circularHole">
+            <div class="preset-icon">◯</div>
+            <div class="preset-name">圆孔衍射</div>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 右侧探测器时域图 -->
+    <aside class="panel right-panel">
+      <section class="card">
+        <h2 class="card-title"><span class="accent-bar"></span>探测器时域图</h2>
+        <div class="td-canvas-wrap">
+          <canvas id="time-canvas" width="260" height="200"></canvas>
+        </div>
+        <div class="td-info">
+          <div class="td-row">
+            <span>当前探测器:</span>
+            <span id="detector-info" class="td-value">—</span>
+          </div>
+          <div class="td-row">
+            <span>瞬时场强 E:</span>
+            <span id="td-field" class="td-value mono">0.000</span>
+          </div>
+          <div class="td-row">
+            <span>峰值 |E|:</span>
+            <span id="td-peak" class="td-value mono accent-text">0.000</span>
+          </div>
+          <div class="td-row">
+            <span>采样点:</span>
+            <span id="td-samples" class="td-value mono">0</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title"><span class="accent-bar"></span>图例</h2>
+        <div class="legend-grid">
+          <div class="legend-item">
+            <div class="legend-color phase-legend"></div>
+            <span>相位色环 (相位模式)</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color amp-legend"></div>
+            <span>振幅亮度 (振幅模式)</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-icon">◎</div>
+            <span>点波源</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-icon">▭</div>
+            <span>障碍物 (理想导体)</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-icon">✚</div>
+            <span>场强探测器</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-wf"></div>
+            <span>波前等相线</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="card-title"><span class="accent-bar"></span>操作提示</h2>
+        <ul class="tips">
+          <li>点击工具栏工具 → 在画布上点击/拖拽放置</li>
+          <li>SELECT 模式下点击对象可选中并删除</li>
+          <li>画布任意位置点击查看瞬时场强</li>
+          <li>平面波从左边界入射，球面波由点源激发</li>
+          <li>障碍物内部：E = 0 (理想导体近似)</li>
+        </ul>
+      </section>
+    </aside>
+  </main>
+
+  <!-- 状态栏 -->
+  <footer class="status-bar">
+    <div class="status-item">
+      <span class="status-label">TIME STEP</span>
+      <span class="status-value mono" id="status-timestep">0</span>
+    </div>
+    <div class="status-divider"></div>
+    <div class="status-item">
+      <span class="status-label">STATUS</span>
+      <span class="status-value" id="status-runstate"><span class="status-dot running"></span>RUNNING</span>
+    </div>
+    <div class="status-divider"></div>
+    <div class="status-item">
+      <span class="status-label">MOUSE</span>
+      <span class="status-value mono" id="status-mouse">(—, —)</span>
+    </div>
+    <div class="status-divider"></div>
+    <div class="status-item">
+      <span class="status-label">E(x,y)</span>
+      <span class="status-value mono accent-text" id="status-field">0.000</span>
+    </div>
+    <div class="status-divider"></div>
+    <div class="status-item">
+      <span class="status-label">FPS</span>
+      <span class="status-value mono" id="status-fps">—</span>
+    </div>
+    <div class="status-divider"></div>
+    <div class="status-item">
+      <span class="status-label">OBJ</span>
+      <span class="status-value mono" id="status-objcount">0</span>
+    </div>
+  </footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

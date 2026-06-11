@@ -1,0 +1,1050 @@
+/* ================================================================
+   EM Wave Simulator - Core Logic
+   2D Scalar Wave Equation FDTD Solver + Renderer + UI
+   ================================================================ */
+
+(() => {
+  'use strict';
+
+  /* ================================================================
+     CONFIG
+     ================================================================ */
+  const CONFIG = {
+    GRID_W: 600,
+    GRID_H: 600,
+    DX: 1.0,
+    COURANT: 0.45,
+    ABS_LAYERS: 24,
+    DETECTOR_HISTORY: 600,
+    WAVEFRONT_THRESHOLD: 0.94,
+    GAMMA_AMP: 0.55,
+  };
+
+  const DT = CONFIG.COURANT * CONFIG.DX;
+
+  /* ================================================================
+     STATE
+     ================================================================ */
+  const STATE = {
+    paused: false,
+    singleStep: false,
+    timeStep: 0,
+    speedMultiplier: 1.0,
+    waveParams: {
+      type: 'plane',
+      wavelength: 16,
+      amplitude: 1.0,
+      phase: 0,
+    },
+    displayMode: 'phase',
+    showWavefronts: true,
+    selectedTool: 'select',
+    selectedObject: null,
+    selectedDetector: null,
+    objects: { sources: [], obstacles: [], detectors: [] },
+    fields: { curr: null, prev: null, next: null, obstacleMask: null },
+    mouse: { x: -1, y: -1, down: false, startX: 0, startY: 0, hoverField: 0 },
+    detectorData: new Map(),
+    perf: { fps: 0, frameCount: 0, lastFpsTime: performance.now() },
+    _nextId: 1,
+  };
+
+  const nextId = () => STATE._nextId++;
+
+  /* ================================================================
+     UTILITIES
+     ================================================================ */
+  const hsvToRgb = (h, s, v) => {
+    h = ((h % 360) + 360) % 360;
+    const c = v * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = v - c;
+    let r, g, b;
+    if (h < 60) [r, g, b] = [c, x, 0];
+    else if (h < 120) [r, g, b] = [x, c, 0];
+    else if (h < 180) [r, g, b] = [0, c, x];
+    else if (h < 240) [r, g, b] = [0, x, c];
+    else if (h < 300) [r, g, b] = [x, 0, c];
+    else [r, g, b] = [c, 0, x];
+    return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+  };
+
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const dist = (x1, y1, x2, y2) => Math.hypot(x1 - x2, y1 - y2);
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  /* ================================================================
+     FIELD INIT
+     ================================================================ */
+  const initFields = () => {
+    const N = CONFIG.GRID_W * CONFIG.GRID_H;
+    STATE.fields.curr = new Float32Array(N);
+    STATE.fields.prev = new Float32Array(N);
+    STATE.fields.next = new Float32Array(N);
+    STATE.fields.obstacleMask = new Uint8Array(N);
+    buildObstacleMask();
+  };
+
+  const resetFields = () => {
+    STATE.fields.curr.fill(0);
+    STATE.fields.prev.fill(0);
+    STATE.fields.next.fill(0);
+    STATE.timeStep = 0;
+    for (const hist of STATE.detectorData.values()) hist.fill(0);
+  };
+
+  const buildObstacleMask = () => {
+    const { obstacleMask } = STATE.fields;
+    obstacleMask.fill(0);
+    const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+    for (const obs of STATE.objects.obstacles) {
+      if (obs.shape === 'rect') {
+        const x0 = clamp(Math.floor(obs.x), 0, W - 1);
+        const y0 = clamp(Math.floor(obs.y), 0, H - 1);
+        const x1 = clamp(Math.floor(obs.x + obs.w), 0, W - 1);
+        const y1 = clamp(Math.floor(obs.y + obs.h), 0, H - 1);
+        for (let y = y0; y <= y1; y++) {
+          const rowOff = y * W;
+          for (let x = x0; x <= x1; x++) obstacleMask[rowOff + x] = 1;
+        }
+      } else if (obs.shape === 'circle') {
+        const cx = obs.x, cy = obs.y, r = obs.r;
+        const x0 = clamp(Math.floor(cx - r), 0, W - 1);
+        const x1 = clamp(Math.floor(cx + r), 0, W - 1);
+        const y0 = clamp(Math.floor(cy - r), 0, H - 1);
+        const y1 = clamp(Math.floor(cy + r), 0, H - 1);
+        const r2 = r * r;
+        for (let y = y0; y <= y1; y++) {
+          const dy = y - cy;
+          const rowOff = y * W;
+          for (let x = x0; x <= x1; x++) {
+            const dx = x - cx;
+            if (dx * dx + dy * dy <= r2) obstacleMask[rowOff + x] = 1;
+          }
+        }
+      } else if (obs.shape === 'ring') {
+        const cx = obs.x, cy = obs.y;
+        const rIn = obs.innerR, rOut = obs.outerR;
+        const x0 = clamp(Math.floor(cx - rOut), 0, W - 1);
+        const x1 = clamp(Math.floor(cx + rOut), 0, W - 1);
+        const y0 = clamp(Math.floor(cy - rOut), 0, H - 1);
+        const y1 = clamp(Math.floor(cy + rOut), 0, H - 1);
+        const rIn2 = rIn * rIn, rOut2 = rOut * rOut;
+        for (let y = y0; y <= y1; y++) {
+          const dy = y - cy;
+          const rowOff = y * W;
+          for (let x = x0; x <= x1; x++) {
+            const dx = x - cx;
+            const d2 = dx * dx + dy * dy;
+            if (d2 >= rIn2 && d2 <= rOut2) obstacleMask[rowOff + x] = 1;
+          }
+        }
+      }
+    }
+  };
+
+  /* ================================================================
+     WAVE SOLVER
+     ================================================================ */
+  const WaveSolver = {
+    step() {
+      const { curr, prev, next, obstacleMask } = STATE.fields;
+      const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+      const r2 = CONFIG.COURANT * CONFIG.COURANT;
+      const abs = CONFIG.ABS_LAYERS;
+
+      for (let y = abs; y < H - abs; y++) {
+        for (let x = abs; x < W - abs; x++) {
+          const idx = y * W + x;
+          if (obstacleMask[idx]) { next[idx] = 0; continue; }
+          const lap = curr[idx + 1] + curr[idx - 1] + curr[idx + W] + curr[idx - W] - 4 * curr[idx];
+          next[idx] = 2 * curr[idx] - prev[idx] + r2 * lap;
+        }
+      }
+
+      const tmp = prev;
+      STATE.fields.prev = curr;
+      STATE.fields.curr = next;
+      STATE.fields.next = tmp;
+
+      this.applySources(STATE.timeStep * DT);
+
+      const obsMask = STATE.fields.obstacleMask;
+      const newCurr = STATE.fields.curr;
+      const newPrev = STATE.fields.prev;
+      for (let i = 0; i < obsMask.length; i++) {
+        if (obsMask[i]) { newCurr[i] = 0; newPrev[i] = 0; }
+      }
+
+      this.applyAbsorbingBoundary();
+      STATE.timeStep++;
+    },
+
+    applySources(t) {
+      const { wavelength, amplitude, phase, type } = STATE.waveParams;
+      const omega = 2 * Math.PI * (CONFIG.COURANT / Math.max(wavelength, 1));
+      const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+      const curr = STATE.fields.curr;
+
+      if (type === 'plane') {
+        const src = amplitude * Math.sin(omega * t + phase);
+        const injX = CONFIG.ABS_LAYERS + 2;
+        for (let y = CONFIG.ABS_LAYERS; y < H - CONFIG.ABS_LAYERS; y++) {
+          const idx = y * W + injX;
+          if (!STATE.fields.obstacleMask[idx]) {
+            curr[idx] = src;
+            const idx2 = y * W + injX + 1;
+            if (injX + 1 < W && !STATE.fields.obstacleMask[idx2])
+              curr[idx2] = lerp(curr[idx2], src, 0.5);
+          }
+        }
+      }
+
+      for (const srcObj of STATE.objects.sources) {
+        if (srcObj.type === 'point') {
+          const sx = Math.floor(srcObj.x);
+          const sy = Math.floor(srcObj.y);
+          if (sx >= 0 && sx < W && sy >= 0 && sy < H) {
+            const idx = sy * W + sx;
+            const srcVal = amplitude * Math.sin(omega * t + phase);
+            curr[idx] = srcVal;
+            if (sx + 1 < W) curr[idx + 1] = lerp(curr[idx + 1], srcVal * 0.5, 0.5);
+            if (sx - 1 >= 0) curr[idx - 1] = lerp(curr[idx - 1], srcVal * 0.5, 0.5);
+            if (sy + 1 < H) curr[idx + W] = lerp(curr[idx + W], srcVal * 0.5, 0.5);
+            if (sy - 1 >= 0) curr[idx - W] = lerp(curr[idx - W], srcVal * 0.5, 0.5);
+          }
+        } else if (srcObj.type === 'line') {
+          const { x1, y1, x2, y2 } = srcObj;
+          const dxL = x2 - x1, dyL = y2 - y1;
+          const len = Math.hypot(dxL, dyL);
+          if (len < 1) continue;
+          const steps = Math.ceil(len * 2);
+          for (let s = 0; s <= steps; s++) {
+            const tt = s / steps;
+            const px = Math.round(x1 + dxL * tt);
+            const py = Math.round(y1 + dyL * tt);
+            if (px >= 0 && px < W && py >= 0 && py < H) {
+              const idx = py * W + px;
+              if (!STATE.fields.obstacleMask[idx])
+                curr[idx] = amplitude * Math.sin(omega * t + phase);
+            }
+          }
+        }
+      }
+    },
+
+    applyAbsorbingBoundary() {
+      const { curr, prev } = STATE.fields;
+      const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+      const L = CONFIG.ABS_LAYERS;
+      for (let layer = 0; layer < L; layer++) {
+        const tt = layer / L;
+        const alphaCurr = 1.0 - 0.42 * (tt * tt * tt);
+        const alphaPrev = 1.0 - 0.30 * (tt * tt * tt);
+        const yTop = layer;
+        const yBot = H - 1 - layer;
+        const xL = layer;
+        const xR = W - 1 - layer;
+
+        if (yTop >= 0 && yTop < H) {
+          for (let x = 0; x < W; x++) {
+            const idx = yTop * W + x;
+            curr[idx] *= alphaCurr;
+            prev[idx] *= alphaPrev;
+          }
+        }
+        if (yBot !== yTop && yBot >= 0 && yBot < H) {
+          for (let x = 0; x < W; x++) {
+            const idx = yBot * W + x;
+            curr[idx] *= alphaCurr;
+            prev[idx] *= alphaPrev;
+          }
+        }
+        for (let y = layer + 1; y < H - layer - 1; y++) {
+          const rowOff = y * W;
+          if (xL >= 0 && xL < W) {
+            curr[rowOff + xL] *= alphaCurr;
+            prev[rowOff + xL] *= alphaPrev;
+          }
+          if (xR !== xL && xR >= 0 && xR < W) {
+            curr[rowOff + xR] *= alphaCurr;
+            prev[rowOff + xR] *= alphaPrev;
+          }
+        }
+      }
+    },
+
+    sample(x, y) {
+      const W = CONFIG.GRID_W;
+      const xi = clamp(Math.floor(x), 0, CONFIG.GRID_W - 1);
+      const yi = clamp(Math.floor(y), 0, CONFIG.GRID_H - 1);
+      return STATE.fields.curr[yi * W + xi];
+    },
+  };
+
+  /* ================================================================
+     RENDERER
+     ================================================================ */
+  const Renderer = {
+    mainCtx: null, overlayCtx: null, timeCtx: null, mainImageData: null,
+
+    init() {
+      this.mainCtx = document.getElementById('main-canvas').getContext('2d');
+      this.overlayCtx = document.getElementById('overlay-canvas').getContext('2d');
+      this.timeCtx = document.getElementById('time-canvas').getContext('2d');
+      this.mainImageData = this.mainCtx.createImageData(CONFIG.GRID_W, CONFIG.GRID_H);
+    },
+
+    renderMain() {
+      const data = this.mainImageData.data;
+      const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+      const curr = STATE.fields.curr;
+      const absMask = STATE.fields.obstacleMask;
+      const amp = STATE.waveParams.amplitude || 1.0;
+      const lambda = STATE.waveParams.wavelength || 16;
+      const t = STATE.timeStep * DT;
+
+      if (STATE.displayMode === 'phase') {
+        for (let i = 0, p = 0; i < W * H; i++, p += 4) {
+          const val = curr[i];
+          const norm = val / Math.max(amp * 1.4, 0.001);
+          const hue = 210 + 140 * norm * 0.5;
+          const br = 0.45 + 0.45 * Math.sin(2 * Math.PI * val / Math.max(lambda, 1) + t * 0.02);
+          const [R, G, B] = hsvToRgb(((hue % 360) + 360) % 360, 0.85, clamp(br, 0.12, 0.98));
+          data[p] = R; data[p + 1] = G; data[p + 2] = B; data[p + 3] = 255;
+        }
+      } else {
+        const maxAmp = amp * 1.5;
+        const bg = [5, 8, 24];
+        for (let i = 0, p = 0; i < W * H; i++, p += 4) {
+          const val = curr[i];
+          const norm = clamp(Math.abs(val) / maxAmp, 0, 1);
+          const v = Math.pow(norm, CONFIG.GAMMA_AMP);
+          data[p] = Math.round(bg[0] + (255 - bg[0]) * v);
+          data[p + 1] = Math.round(bg[1] + (255 - bg[1]) * v * 0.92);
+          data[p + 2] = Math.round(bg[2] + (255 - bg[2]) * v * 0.85);
+          data[p + 3] = 255;
+        }
+      }
+
+      for (let i = 0, p = 0; i < W * H; i++, p += 4) {
+        if (absMask[i]) {
+          data[p] = Math.round(data[p] * 0.25 + 70 * 0.75);
+          data[p + 1] = Math.round(data[p + 1] * 0.25 + 52 * 0.75);
+          data[p + 2] = Math.round(data[p + 2] * 0.25 + 30 * 0.75);
+        }
+      }
+      this.mainCtx.putImageData(this.mainImageData, 0, 0);
+      if (STATE.showWavefronts) this.renderWavefronts();
+      this.renderAbsorbingFade();
+      this.renderOverlay();
+    },
+
+    renderWavefronts() {
+      const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+      const curr = STATE.fields.curr;
+      const amp = STATE.waveParams.amplitude || 1.0;
+      const ctx = this.overlayCtx;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 0.5;
+      const threshold = CONFIG.WAVEFRONT_THRESHOLD;
+      const phaseT = STATE.timeStep * DT * 0.6;
+      for (let y = 2; y < H - 2; y++) {
+        ctx.beginPath();
+        let started = false;
+        for (let x = 2; x < W - 2; x++) {
+          const v = curr[y * W + x];
+          const s = Math.sin(v / Math.max(amp * 0.6, 1e-6) * Math.PI + phaseT);
+          if (Math.abs(s) > threshold && Math.abs(v) > 0.02) {
+            if (!started) { ctx.moveTo(x, y); started = true; }
+            else ctx.lineTo(x, y);
+          } else if (started) { ctx.stroke(); ctx.beginPath(); started = false; }
+        }
+        if (started) ctx.stroke();
+      }
+      ctx.restore();
+    },
+
+    renderAbsorbingFade() {
+      const ctx = this.overlayCtx;
+      const L = CONFIG.ABS_LAYERS;
+      const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+      ctx.save();
+      let g = ctx.createLinearGradient(0, 0, 0, L);
+      g.addColorStop(0, 'rgba(5,8,24,0.9)');
+      g.addColorStop(1, 'rgba(5,8,24,0)');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, L);
+      g = ctx.createLinearGradient(0, H - L, 0, H);
+      g.addColorStop(0, 'rgba(5,8,24,0)');
+      g.addColorStop(1, 'rgba(5,8,24,0.9)');
+      ctx.fillStyle = g; ctx.fillRect(0, H - L, W, L);
+      g = ctx.createLinearGradient(0, 0, L, 0);
+      g.addColorStop(0, 'rgba(5,8,24,0.9)');
+      g.addColorStop(1, 'rgba(5,8,24,0)');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, L, H);
+      g = ctx.createLinearGradient(W - L, 0, W, 0);
+      g.addColorStop(0, 'rgba(5,8,24,0)');
+      g.addColorStop(1, 'rgba(5,8,24,0.9)');
+      ctx.fillStyle = g; ctx.fillRect(W - L, 0, L, H);
+      ctx.restore();
+    },
+
+    renderOverlay() {
+      const ctx = this.overlayCtx;
+      ctx.save();
+      ctx.clearRect(0, 0, CONFIG.GRID_W, CONFIG.GRID_H);
+      for (const s of STATE.objects.sources) {
+        const sel = STATE.selectedObject === s;
+        if (s.type === 'point') this.drawPointSource(ctx, s.x, s.y, sel);
+        else if (s.type === 'line') this.drawLineSource(ctx, s.x1, s.y1, s.x2, s.y2, sel);
+      }
+      for (const o of STATE.objects.obstacles) {
+        const sel = STATE.selectedObject === o;
+        if (o.shape === 'rect') this.drawRectObstacle(ctx, o.x, o.y, o.w, o.h, sel);
+        else if (o.shape === 'circle') this.drawCircleObstacle(ctx, o.x, o.y, o.r, sel);
+        else if (o.shape === 'ring') this.drawRingObstacle(ctx, o.x, o.y, o.innerR, o.outerR, sel);
+      }
+      for (const d of STATE.objects.detectors) {
+        const sel = STATE.selectedObject === d || STATE.selectedDetector === d;
+        this.drawDetector(ctx, d.x, d.y, d.id, sel);
+      }
+      this.renderPlacementPreview(ctx);
+      ctx.restore();
+    },
+
+    drawPointSource(ctx, x, y, selected) {
+      ctx.save();
+      const gc = selected ? 'rgba(0,229,255,0.95)' : 'rgba(0,229,255,0.75)';
+      ctx.shadowColor = gc; ctx.shadowBlur = selected ? 18 : 10;
+      ctx.fillStyle = '#050818'; ctx.strokeStyle = gc; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.shadowBlur = 0; ctx.fillStyle = selected ? '#fff' : '#00e5ff';
+      ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+      const pulse = 1 + 0.3 * Math.sin(STATE.timeStep * 0.2);
+      ctx.strokeStyle = 'rgba(0,229,255,' + (selected ? 0.35 : 0.2) + ')';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y, 11 * pulse, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    },
+
+    drawLineSource(ctx, x1, y1, x2, y2, selected) {
+      ctx.save();
+      const c = selected ? '#fff' : '#00e5ff';
+      ctx.shadowColor = 'rgba(0,229,255,0.85)';
+      ctx.shadowBlur = selected ? 16 : 10;
+      ctx.strokeStyle = c; ctx.lineWidth = selected ? 3 : 2;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.shadowBlur = 0; ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.arc(x1, y1, 3.5, 0, Math.PI * 2);
+      ctx.arc(x2, y2, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    },
+
+    drawRectObstacle(ctx, x, y, w, h, selected) {
+      ctx.save();
+      ctx.shadowColor = selected ? 'rgba(255,179,71,0.95)' : 'rgba(255,179,71,0.4)';
+      ctx.shadowBlur = selected ? 12 : 6;
+      ctx.strokeStyle = selected ? '#ffb347' : 'rgba(255,179,71,0.85)';
+      ctx.lineWidth = selected ? 2 : 1.5;
+      ctx.setLineDash([5, 3]);
+      ctx.strokeRect(x, y, w, h);
+      ctx.setLineDash([]);
+      ctx.fillStyle = selected ? '#ffb347' : 'rgba(255,179,71,0.6)';
+      const cs = 3;
+      ctx.fillRect(x - cs, y - cs, cs * 2, cs * 2);
+      ctx.fillRect(x + w - cs, y - cs, cs * 2, cs * 2);
+      ctx.fillRect(x - cs, y + h - cs, cs * 2, cs * 2);
+      ctx.fillRect(x + w - cs, y + h - cs, cs * 2, cs * 2);
+      ctx.restore();
+    },
+
+    drawCircleObstacle(ctx, x, y, r, selected) {
+      ctx.save();
+      ctx.shadowColor = selected ? 'rgba(255,179,71,0.95)' : 'rgba(255,179,71,0.4)';
+      ctx.shadowBlur = selected ? 12 : 6;
+      ctx.strokeStyle = selected ? '#ffb347' : 'rgba(255,179,71,0.85)';
+      ctx.lineWidth = selected ? 2 : 1.5;
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    },
+
+    drawRingObstacle(ctx, x, y, rIn, rOut, selected) {
+      ctx.save();
+      ctx.shadowColor = selected ? 'rgba(255,179,71,0.95)' : 'rgba(255,179,71,0.4)';
+      ctx.shadowBlur = selected ? 12 : 6;
+      ctx.strokeStyle = selected ? '#ffb347' : 'rgba(255,179,71,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 2]);
+      ctx.beginPath(); ctx.arc(x, y, rIn, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, rOut, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    },
+
+    drawDetector(ctx, x, y, id, selected) {
+      ctx.save();
+      const c = '#00ffa3';
+      ctx.shadowColor = 'rgba(0,255,163,0.85)';
+      ctx.shadowBlur = selected ? 16 : 8;
+      ctx.strokeStyle = c; ctx.lineWidth = selected ? 2 : 1.5;
+      const s = 10;
+      ctx.beginPath();
+      ctx.moveTo(x - s, y); ctx.lineTo(x + s, y);
+      ctx.moveTo(x, y - s); ctx.lineTo(x, y + s);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#050818'; ctx.strokeStyle = c; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 5); ctx.lineTo(x - 5, y);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.font = 'bold 9px "Share Tech Mono", monospace';
+      ctx.fillStyle = c; ctx.shadowBlur = selected ? 4 : 0;
+      ctx.textAlign = 'center'; ctx.fillText('D' + id, x, y - 13);
+      ctx.restore();
+    },
+
+    renderPlacementPreview(ctx) {
+      const { x, y, down, startX, startY } = STATE.mouse;
+      if (x < 0 || x >= CONFIG.GRID_W || y < 0 || y >= CONFIG.GRID_H) return;
+      if (STATE.selectedTool === 'select') return;
+      ctx.save(); ctx.globalAlpha = 0.6;
+      ctx.shadowColor = 'rgba(0,229,255,0.8)'; ctx.shadowBlur = 8;
+      switch (STATE.selectedTool) {
+        case 'pointSource':
+          ctx.strokeStyle = '#00e5ff'; ctx.fillStyle = 'rgba(0,229,255,0.2)'; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          break;
+        case 'lineSource':
+          ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          if (down) ctx.moveTo(startX, startY); else ctx.moveTo(x - 30, y);
+          ctx.lineTo(x, y); ctx.stroke();
+          break;
+        case 'rectObs':
+          ctx.strokeStyle = '#ffb347'; ctx.fillStyle = 'rgba(255,179,71,0.15)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
+          if (down) {
+            const px = Math.min(startX, x), py = Math.min(startY, y);
+            const pw = Math.abs(x - startX), ph = Math.abs(y - startY);
+            ctx.fillRect(px, py, pw, ph); ctx.strokeRect(px, py, pw, ph);
+          } else ctx.strokeRect(x - 20, y - 20, 40, 40);
+          break;
+        case 'circleObs':
+          ctx.strokeStyle = '#ffb347'; ctx.fillStyle = 'rgba(255,179,71,0.15)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
+          if (down) {
+            const r = Math.max(4, Math.hypot(x - startX, y - startY));
+            ctx.beginPath(); ctx.arc(startX, startY, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          } else { ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI * 2); ctx.stroke(); }
+          break;
+        case 'detector':
+          ctx.strokeStyle = '#00ffa3'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+          const s2 = 10;
+          ctx.beginPath();
+          ctx.moveTo(x - s2, y); ctx.lineTo(x + s2, y);
+          ctx.moveTo(x, y - s2); ctx.lineTo(x, y + s2);
+          ctx.stroke();
+          break;
+      }
+      ctx.restore();
+    },
+
+    renderTimeDomain() {
+      const ctx = this.timeCtx; const cvs = ctx.canvas;
+      const W = cvs.width, H = cvs.height;
+      ctx.fillStyle = '#050818'; ctx.fillRect(0, 0, W, H);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(0,255,163,0.1)'; ctx.lineWidth = 1;
+      for (let i = 0; i <= 10; i++) { const xx = (i / 10) * W; ctx.beginPath(); ctx.moveTo(xx, 0); ctx.lineTo(xx, H); ctx.stroke(); }
+      for (let i = 0; i <= 6; i++) { const yy = (i / 6) * H; ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(W, yy); ctx.stroke(); }
+      ctx.strokeStyle = 'rgba(0,255,163,0.25)'; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      if (!STATE.selectedDetector) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(230,240,255,0.5)';
+        ctx.font = '11px "JetBrains Mono", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('选择探测器查看时域波形', W / 2, H / 2);
+        ctx.fillText('SELECT -> 点击探测器', W / 2, H / 2 + 16);
+        ctx.restore();
+        document.getElementById('detector-info').textContent = '—';
+        document.getElementById('td-field').textContent = '0.000';
+        document.getElementById('td-peak').textContent = '0.000';
+        document.getElementById('td-samples').textContent = '0';
+        return;
+      }
+      const det = STATE.selectedDetector;
+      const hist = STATE.detectorData.get(det.id);
+      if (!hist || hist.length < 2) return;
+      const N = CONFIG.DETECTOR_HISTORY;
+      const startIdx = (STATE.timeStep) % N;
+      let maxAbs = Math.max(STATE.waveParams.amplitude * 0.1, 1e-4);
+      for (let i = 0; i < N; i++) { const v = Math.abs(hist[i]); if (v > maxAbs) maxAbs = v; }
+      maxAbs *= 1.15;
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,255,163,0.9)';
+      ctx.shadowBlur = 8;
+      ctx.strokeStyle = '#00ffa3'; ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      let peakVal = 0, peakX = 0, peakY = 0;
+      for (let px = 0; px < W; px++) {
+        const frac = px / (W - 1);
+        const sampleIdx = Math.floor((startIdx - 1 - frac * (N - 1) + N * 2) % N);
+        const val = hist[sampleIdx];
+        const py = (0.5 - (val / maxAbs) * 0.45) * H;
+        if (px === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        if (Math.abs(val) > peakVal) { peakVal = Math.abs(val); peakX = px; peakY = py; }
+      }
+      ctx.stroke();
+      if (peakVal > 0) {
+        ctx.shadowBlur = 0; ctx.fillStyle = '#ff3b6b';
+        ctx.beginPath(); ctx.arc(peakX, peakY, 3, 0, Math.PI * 2); ctx.fill();
+      }
+      const lastIdx = (startIdx - 1 + N) % N;
+      const lastVal = hist[lastIdx];
+      const lastPY = (0.5 - (lastVal / maxAbs) * 0.45) * H;
+      ctx.fillStyle = '#00ffa3';
+      ctx.shadowBlur = 12;
+      ctx.beginPath(); ctx.arc(W - 1, lastPY, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,255,163,0.5)';
+      ctx.font = '9px "Share Tech Mono", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('+' + maxAbs.toFixed(2), 3, 10);
+      ctx.fillText('-' + maxAbs.toFixed(2), 3, H - 3);
+      ctx.fillText('0', 3, H / 2 + 9);
+      ctx.textAlign = 'right'; ctx.fillText('t->', W - 3, H - 3);
+      ctx.restore();
+      document.getElementById('detector-info').textContent = 'D' + det.id + ' @ (' + det.x + ', ' + det.y + ')';
+      document.getElementById('td-field').textContent = lastVal.toFixed(4);
+      document.getElementById('td-peak').textContent = peakVal.toFixed(4);
+      const nSamples = Math.min(STATE.timeStep, N);
+      document.getElementById('td-samples').textContent = nSamples + ' / ' + N;
+    },
+  };
+
+  /* ================================================================
+     DETECTOR DATA
+     ================================================================ */
+  const collectDetectorData = () => {
+    const N = CONFIG.DETECTOR_HISTORY;
+    const writeIdx = STATE.timeStep % N;
+    for (const d of STATE.objects.detectors) {
+      const hist = STATE.detectorData.get(d.id);
+      if (!hist) continue;
+      hist[writeIdx] = WaveSolver.sample(d.x, d.y);
+    }
+  };
+
+  /* ================================================================
+     PRESETS
+     ================================================================ */
+  const PRESETS = {
+    free: {
+      waveType: 'spherical', wavelength: 14, amplitude: 1.0,
+      objects: () => {
+        const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+        const srcs = [{ id: nextId(), type: 'point', x: W / 2, y: H / 2 }];
+        const dets = [{ id: nextId(), x: Math.floor(W / 2 + 80), y: Math.floor(H / 2 + 60) }];
+        return { sources: srcs, obstacles: [], detectors: dets };
+      },
+    },
+    doubleSlit: {
+      waveType: 'plane', wavelength: 10, amplitude: 1.0,
+      objects: () => {
+        const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+        const slitX = W * 0.42;
+        const slitSep = 64; const slitW = 14; const wallThick = 10;
+        const cy = H / 2;
+        const obs = [
+          { id: nextId(), shape: 'rect', x: slitX, y: 0, w: wallThick, h: cy - slitSep / 2 - slitW / 2 },
+          { id: nextId(), shape: 'rect', x: slitX, y: cy - slitSep / 2 + slitW / 2, w: wallThick, h: slitSep - slitW },
+          { id: nextId(), shape: 'rect', x: slitX, y: cy + slitSep / 2 + slitW / 2, w: wallThick, h: H - (cy + slitSep / 2 + slitW / 2) },
+        ];
+        const dets = [
+          { id: nextId(), x: Math.floor(W * 0.8), y: Math.floor(H / 2) },
+          { id: nextId(), x: Math.floor(W * 0.8), y: Math.floor(H / 2 + 70) },
+          { id: nextId(), x: Math.floor(W * 0.8), y: Math.floor(H / 2 - 70) },
+        ];
+        return { sources: [], obstacles: obs, detectors: dets };
+      },
+    },
+    square: {
+      waveType: 'plane', wavelength: 12, amplitude: 1.0,
+      objects: () => {
+        const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+        const size = 100;
+        const obs = [{ id: nextId(), shape: 'rect', x: Math.floor(W / 2 - size / 2), y: Math.floor(H / 2 - size / 2), w: size, h: size }];
+        return { sources: [], obstacles: obs, detectors: [{ id: nextId(), x: Math.floor(W * 0.85), y: Math.floor(H / 2) }] };
+      },
+    },
+    zonePlate: {
+      waveType: 'spherical', wavelength: 8, amplitude: 1.0,
+      objects: () => {
+        const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+        const cx = W * 0.55, cy = H * 0.5;
+        const focal = 150; const lambda = 8;
+        const zones = [];
+        for (let n = 2; n <= 8; n += 2) {
+          zones.push({
+            id: nextId(), shape: 'ring', x: cx, y: cy,
+            innerR: Math.sqrt((n - 1) * lambda * focal),
+            outerR: Math.sqrt(n * lambda * focal),
+          });
+        }
+        return {
+          sources: [{ id: nextId(), type: 'point', x: CONFIG.ABS_LAYERS + 10, y: cy }],
+          obstacles: zones,
+          detectors: [{ id: nextId(), x: Math.floor(cx + focal + 30), y: Math.floor(cy) }],
+        };
+      },
+    },
+    circularHole: {
+      waveType: 'plane', wavelength: 10, amplitude: 1.0,
+      objects: () => {
+        const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+        const cx = W * 0.45, cy = H * 0.5, holeR = 50;
+        const obs = [
+          { id: nextId(), shape: 'rect', x: cx - 6, y: 0, w: 12, h: cy - holeR },
+          { id: nextId(), shape: 'rect', x: cx - 6, y: cy + holeR, w: 12, h: H - (cy + holeR) },
+        ];
+        const dets = [
+          { id: nextId(), x: Math.floor(cx + 130), y: Math.floor(cy) },
+          { id: nextId(), x: Math.floor(cx + 130), y: Math.floor(cy + 40) },
+          { id: nextId(), x: Math.floor(cx + 130), y: Math.floor(cy - 40) },
+        ];
+        return { sources: [], obstacles: obs, detectors: dets };
+      },
+    },
+  };
+
+  const loadPreset = (name) => {
+    const preset = PRESETS[name];
+    if (!preset) return;
+    STATE._nextId = 1;
+    const obj = preset.objects();
+    STATE.objects.sources = obj.sources;
+    STATE.objects.obstacles = obj.obstacles;
+    STATE.objects.detectors = obj.detectors;
+    STATE.waveParams.type = preset.waveType;
+    STATE.waveParams.wavelength = preset.wavelength;
+    STATE.waveParams.amplitude = preset.amplitude;
+    STATE.detectorData.clear();
+    for (const d of STATE.objects.detectors) {
+      STATE.detectorData.set(d.id, new Float32Array(CONFIG.DETECTOR_HISTORY));
+    }
+    STATE.selectedDetector = STATE.objects.detectors[0] || null;
+    STATE.selectedObject = null;
+    buildObstacleMask();
+    resetFields();
+    document.querySelectorAll('[data-wave]').forEach(b => b.classList.toggle('active', b.dataset.wave === STATE.waveParams.type));
+    document.getElementById('wavelength').value = preset.wavelength;
+    document.getElementById('amplitude').value = preset.amplitude;
+    updateSliderVals();
+    document.querySelectorAll('.preset-btn').forEach(b => b.classList.toggle('active', b.dataset.preset === name));
+  };
+
+  /* ================================================================
+     EXPORTER
+     ================================================================ */
+  const Exporter = {
+    exportCSV() {
+      const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+      const curr = STATE.fields.curr;
+      let min = Infinity, max = -Infinity;
+      for (let i = 0; i < W * H; i++) { if (curr[i] < min) min = curr[i]; if (curr[i] > max) max = curr[i]; }
+      const range = Math.max(1e-9, max - min);
+      const lines = [];
+      lines.push('# EM Wave Field Export');
+      lines.push('# Timestamp: ' + new Date().toISOString());
+      lines.push('# Grid: ' + W + 'x' + H + ', TimeStep: ' + STATE.timeStep);
+      lines.push('# Wavelength=' + STATE.waveParams.wavelength + ', Amplitude=' + STATE.waveParams.amplitude + ', Phase=' + STATE.waveParams.phase);
+      lines.push('# WaveType=' + STATE.waveParams.type + ', Display=' + STATE.displayMode);
+      lines.push('# RawField Range: [' + min.toFixed(6) + ', ' + max.toFixed(6) + '], normalized 0-255 grayscale');
+      for (let y = 0; y < H; y++) {
+        const row = [];
+        const rowOff = y * W;
+        for (let x = 0; x < W; x++) {
+          const norm = (curr[rowOff + x] - min) / range;
+          row.push(Math.round(norm * 255));
+        }
+        lines.push(row.join(','));
+      }
+      const csv = lines.join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      const fname = 'field_' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '_' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds()) + '.csv';
+      const a = document.createElement('a');
+      a.href = url; a.download = fname;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+    },
+  };
+
+  /* ================================================================
+     UI CONTROLLER
+     ================================================================ */
+  const updateSliderVals = () => {
+    document.getElementById('wavelength-val').textContent = STATE.waveParams.wavelength + ' px';
+    document.getElementById('amplitude-val').textContent = STATE.waveParams.amplitude.toFixed(2);
+    document.getElementById('phase-val').textContent = STATE.waveParams.phase.toFixed(2) + ' rad';
+    document.getElementById('speed-val').textContent = STATE.speedMultiplier.toFixed(2) + 'x';
+    const ranges = { wavelength: [4, 64], amplitude: [0.1, 2.0], phase: [0, 6.2832], speed: [0.25, 3.0] };
+    for (const id of Object.keys(ranges)) {
+      const el = document.getElementById(id);
+      const [lo, hi] = ranges[id];
+      const v = (parseFloat(el.value) - lo) / (hi - lo);
+      el.style.setProperty('--val', (v * 100) + '%');
+    }
+  };
+
+  const updateStatus = () => {
+    document.getElementById('status-timestep').textContent = STATE.timeStep;
+    const rs = document.getElementById('status-runstate');
+    rs.innerHTML = STATE.paused
+      ? '<span class="status-dot paused"></span>PAUSED'
+      : '<span class="status-dot running"></span>RUNNING';
+    const mx = STATE.mouse.x, my = STATE.mouse.y;
+    const W = CONFIG.GRID_W, H = CONFIG.GRID_H;
+    if (mx >= 0 && mx < W && my >= 0 && my < H) {
+      document.getElementById('status-mouse').textContent = '(' + mx + ', ' + my + ')';
+      document.getElementById('status-field').textContent = WaveSolver.sample(mx, my).toFixed(4);
+    } else {
+      document.getElementById('status-mouse').textContent = '(—, —)';
+      document.getElementById('status-field').textContent = '0.000';
+    }
+    document.getElementById('status-fps').textContent = STATE.perf.fps.toFixed(0);
+    const objCount = STATE.objects.sources.length + STATE.objects.obstacles.length + STATE.objects.detectors.length;
+    document.getElementById('status-objcount').textContent = objCount;
+  };
+
+  const selectTool = tool => {
+    STATE.selectedTool = tool;
+    STATE.selectedObject = null;
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
+  };
+
+  const findObjectAt = (x, y) => {
+    for (const d of STATE.objects.detectors)
+      if (Math.abs(d.x - x) <= 12 && Math.abs(d.y - y) <= 12) return d;
+    for (const s of STATE.objects.sources) {
+      if (s.type === 'point') { if (dist(x, y, s.x, s.y) <= 12) return s; }
+      else if (s.type === 'line') {
+        const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+        const len2 = dx * dx + dy * dy;
+        if (len2 < 1e-9) { if (dist(x, y, s.x1, s.y1) <= 8) return s; }
+        else {
+          let t = ((x - s.x1) * dx + (y - s.y1) * dy) / len2;
+          t = clamp(t, 0, 1);
+          if (dist(x, y, s.x1 + dx * t, s.y1 + dy * t) <= 8) return s;
+        }
+      }
+    }
+    for (const o of STATE.objects.obstacles) {
+      if (o.shape === 'rect') {
+        if (x >= o.x - 4 && x <= o.x + o.w + 4 && y >= o.y - 4 && y <= o.y + o.h + 4) return o;
+      } else if (o.shape === 'circle') {
+        const d = dist(x, y, o.x, o.y);
+        if (Math.abs(d - o.r) <= 6 || d <= o.r) return o;
+      } else if (o.shape === 'ring') {
+        const d = dist(x, y, o.x, o.y);
+        if (d >= o.innerR - 4 && d <= o.outerR + 4) return o;
+      }
+    }
+    return null;
+  };
+
+  const deleteSelected = () => {
+    if (!STATE.selectedObject) return;
+    const obj = STATE.selectedObject;
+    const far = arr => {
+      const i = arr.indexOf(obj);
+      if (i >= 0) { arr.splice(i, 1); return true; }
+      return false;
+    };
+    far(STATE.objects.sources) || far(STATE.objects.obstacles) || far(STATE.objects.detectors);
+    if (STATE.detectorData.has(obj.id)) STATE.detectorData.delete(obj.id);
+    if (STATE.selectedDetector === obj) STATE.selectedDetector = null;
+    STATE.selectedObject = null;
+    buildObstacleMask();
+  };
+
+  const initUI = () => {
+    document.querySelectorAll('.tool-btn[data-tool]').forEach(btn => btn.addEventListener('click', () => selectTool(btn.dataset.tool)));
+    document.getElementById('delete-btn').addEventListener('click', deleteSelected);
+    document.querySelectorAll('[data-wave]').forEach(btn => btn.addEventListener('click', () => {
+      STATE.waveParams.type = btn.dataset.wave;
+      document.querySelectorAll('[data-wave]').forEach(b => b.classList.toggle('active', b === btn));
+    }));
+    document.querySelectorAll('[data-display]').forEach(btn => btn.addEventListener('click', () => {
+      STATE.displayMode = btn.dataset.display;
+      document.querySelectorAll('[data-display]').forEach(b => b.classList.toggle('active', b === btn));
+    }));
+    document.getElementById('wavelength').addEventListener('input', e => { STATE.waveParams.wavelength = parseInt(e.target.value); updateSliderVals(); });
+    document.getElementById('amplitude').addEventListener('input', e => { STATE.waveParams.amplitude = parseFloat(e.target.value); updateSliderVals(); });
+    document.getElementById('phase').addEventListener('input', e => { STATE.waveParams.phase = parseFloat(e.target.value); updateSliderVals(); });
+    document.getElementById('speed').addEventListener('input', e => { STATE.speedMultiplier = parseFloat(e.target.value); updateSliderVals(); });
+    document.getElementById('wavefront-toggle').addEventListener('change', e => STATE.showWavefronts = e.target.checked);
+    const pauseBtn = document.getElementById('pause-btn');
+    pauseBtn.addEventListener('click', () => {
+      STATE.paused = !STATE.paused;
+      pauseBtn.querySelector('.btn-icon').textContent = STATE.paused ? '>' : 'II';
+      pauseBtn.querySelector('.btn-text').textContent = STATE.paused ? '继续' : '暂停';
+    });
+    document.getElementById('step-btn').addEventListener('click', () => {
+      if (!STATE.paused) {
+        STATE.paused = true;
+        pauseBtn.querySelector('.btn-icon').textContent = '>';
+        pauseBtn.querySelector('.btn-text').textContent = '继续';
+      }
+      STATE.singleStep = true;
+    });
+    document.getElementById('reset-btn').addEventListener('click', resetFields);
+    document.getElementById('export-btn').addEventListener('click', () => Exporter.exportCSV());
+    document.querySelectorAll('.preset-btn').forEach(btn => btn.addEventListener('click', () => loadPreset(btn.dataset.preset)));
+
+    const overlayCanvas = document.getElementById('overlay-canvas');
+    const crosshair = document.getElementById('crosshair');
+    const tooltip = document.getElementById('field-tooltip');
+
+    const updateCoords = e => {
+      const rect = overlayCanvas.getBoundingClientRect();
+      const scaleX = overlayCanvas.width / rect.width;
+      const scaleY = overlayCanvas.height / rect.height;
+      STATE.mouse.x = Math.floor((e.clientX - rect.left) * scaleX);
+      STATE.mouse.y = Math.floor((e.clientY - rect.top) * scaleY);
+      if (STATE.mouse.x >= 0 && STATE.mouse.x < CONFIG.GRID_W && STATE.mouse.y >= 0 && STATE.mouse.y < CONFIG.GRID_H) {
+        crosshair.classList.remove('hidden');
+        crosshair.style.left = (e.clientX - rect.left - 12) + 'px';
+        crosshair.style.top = (e.clientY - rect.top - 12) + 'px';
+      } else crosshair.classList.add('hidden');
+    };
+
+    overlayCanvas.addEventListener('mouseenter', () => crosshair.classList.remove('hidden'));
+    overlayCanvas.addEventListener('mouseleave', () => {
+      crosshair.classList.add('hidden');
+      tooltip.classList.add('hidden');
+      STATE.mouse.x = -1; STATE.mouse.y = -1;
+    });
+    overlayCanvas.addEventListener('mousemove', updateCoords);
+
+    overlayCanvas.addEventListener('mousedown', e => {
+      updateCoords(e);
+      STATE.mouse.down = true;
+      STATE.mouse.startX = STATE.mouse.x;
+      STATE.mouse.startY = STATE.mouse.y;
+      if (STATE.selectedTool === 'select') {
+        const obj = findObjectAt(STATE.mouse.x, STATE.mouse.y);
+        STATE.selectedObject = obj;
+        if (obj && STATE.objects.detectors.includes(obj)) STATE.selectedDetector = obj;
+      }
+    });
+
+    overlayCanvas.addEventListener('mouseup', e => {
+      updateCoords(e);
+      const x = STATE.mouse.x, y = STATE.mouse.y;
+      const sx = STATE.mouse.startX, sy = STATE.mouse.startY;
+      const tool = STATE.selectedTool;
+      if (STATE.mouse.down && tool !== 'select') {
+        if (x >= 0 && x < CONFIG.GRID_W && y >= 0 && y < CONFIG.GRID_H) {
+          if (tool === 'pointSource') {
+            STATE.objects.sources.push({ id: nextId(), type: 'point', x, y });
+          } else if (tool === 'lineSource') {
+            STATE.objects.sources.push({ id: nextId(), type: 'line', x1: sx, y1: sy, x2: x, y2: y });
+          } else if (tool === 'rectObs') {
+            const px = Math.min(sx, x), py = Math.min(sy, y);
+            const pw = Math.max(4, Math.abs(x - sx)), ph = Math.max(4, Math.abs(y - sy));
+            STATE.objects.obstacles.push({ id: nextId(), shape: 'rect', x: px, y: py, w: pw, h: ph });
+            buildObstacleMask();
+          } else if (tool === 'circleObs') {
+            const r = Math.max(4, Math.hypot(x - sx, y - sy));
+            STATE.objects.obstacles.push({ id: nextId(), shape: 'circle', x: sx, y: sy, r });
+            buildObstacleMask();
+          } else if (tool === 'detector') {
+            const id = nextId();
+            const d = { id, x, y };
+            STATE.objects.detectors.push(d);
+            STATE.detectorData.set(id, new Float32Array(CONFIG.DETECTOR_HISTORY));
+            if (STATE.selectedDetector == null) STATE.selectedDetector = d;
+          }
+        }
+        STATE.mouse.down = false;
+      } else if (tool === 'select') {
+        const obj = findObjectAt(x, y);
+        if (!obj && Math.abs(x - sx) < 4 && Math.abs(y - sy) < 4) {
+          tooltip.innerHTML = '<div class="label">坐标 (' + x + ', ' + y + ')</div>' +
+            '<div><span class="label">E(x,y)</span><span class="value">' + WaveSolver.sample(x, y).toFixed(6) + '</span></div>';
+          const rect = overlayCanvas.getBoundingClientRect();
+          tooltip.style.left = (e.clientX - rect.left) + 'px';
+          tooltip.style.top = (e.clientY - rect.top) + 'px';
+          tooltip.classList.remove('hidden');
+          setTimeout(() => tooltip.classList.add('hidden'), 1800);
+        }
+        STATE.mouse.down = false;
+      }
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.target.tagName === 'INPUT') return;
+      if (e.key === ' ') { e.preventDefault(); pauseBtn.click(); }
+      if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
+      if (e.key === 'Escape') { STATE.selectedObject = null; STATE.selectedTool = 'select'; selectTool('select'); }
+      if (e.key === '1') selectTool('select');
+      if (e.key === '2') selectTool('pointSource');
+      if (e.key === '3') selectTool('lineSource');
+      if (e.key === '4') selectTool('rectObs');
+      if (e.key === '5') selectTool('circleObs');
+      if (e.key === '6') selectTool('detector');
+    });
+  };
+
+  /* ================================================================
+     MAIN LOOP
+     ================================================================ */
+  const mainLoop = () => {
+    const speedSteps = STATE.speedMultiplier;
+    if (!STATE.paused || STATE.singleStep) {
+      const steps = STATE.singleStep ? 1 : Math.max(1, Math.round(speedSteps));
+      for (let s = 0; s < steps; s++) {
+        WaveSolver.step();
+        collectDetectorData();
+        if (STATE.singleStep) break;
+      }
+      STATE.singleStep = false;
+    }
+    Renderer.renderMain();
+    Renderer.renderTimeDomain();
+    STATE.perf.frameCount++;
+    const now = performance.now();
+    if (now - STATE.perf.lastFpsTime >= 500) {
+      STATE.perf.fps = STATE.perf.frameCount * 1000 / (now - STATE.perf.lastFpsTime);
+      STATE.perf.frameCount = 0;
+      STATE.perf.lastFpsTime = now;
+    }
+    updateStatus();
+    requestAnimationFrame(mainLoop);
+  };
+
+  /* ================================================================
+     BOOT
+     ================================================================ */
+  const boot = () => {
+    initFields();
+    Renderer.init();
+    initUI();
+    updateSliderVals();
+    loadPreset('free');
+    requestAnimationFrame(mainLoop);
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+
+})();
